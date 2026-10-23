@@ -152,12 +152,39 @@ private slots:
         QVERIFY(index.entry(0).weight > 2000);
     }
 
+    void detectsNucleotidesHeavyInAmbiguityCodes()
+    {
+        std::vector<qint64> letters(26, 0);
+        auto add = [&](const char *text) { for (const char *c = text; *c; ++c) ++letters[size_t(*c - 'A')]; };
+        add("ACGTNRYKMSWBDHVNRYKMSWBDHV");
+        QCOMPARE(detectAlphabet(letters), Alphabet::Nucleotide);
+        add("MEEKLLPFIQ");
+        QCOMPARE(detectAlphabet(letters), Alphabet::Protein);
+    }
+
+    void reportsTruncatedGzip()
+    {
+        QTemporaryDir dir;
+        QByteArray plain;
+        for (int i = 0; i < 2000; ++i)
+            plain += "@r" + QByteArray::number(i) + "\n" + QByteArray(120, "ACGT"[i % 4]) + "\n+\n" + QByteArray(120, 'I') + "\n";
+        writeGzip(dir.filePath("whole.fq.gz"), plain);
+        QFile whole(dir.filePath("whole.fq.gz"));
+        QVERIFY(whole.open(QIODevice::ReadOnly));
+        write(dir.filePath("cut.fq.gz"), whole.readAll().left(int(whole.size() / 2)));
+        FastxIndex index;
+        QVERIFY(!index.build(dir.filePath("cut.fq.gz"), {}));
+        QVERIFY2(index.error().contains("truncated"), qPrintable(index.error()));
+    }
+
     void reverseComplements()
     {
         QCOMPARE(reverseComplement("ACGTN"), QByteArray("NACGT"));
         QCOMPARE(reverseComplement("aaccRY"), QByteArray("RYggtt"));
         QCOMPARE(reverseComplement("GATTACA"), QByteArray("TGTAATC"));
         QCOMPARE(reverseComplement(reverseComplement("ACGTRYKMBDHVN")), QByteArray("ACGTRYKMBDHVN"));
+        QCOMPARE(reverseComplement("AUGGCu"), QByteArray("aGCCAU"));
+        QCOMPARE(reverseComplement(reverseComplement("AUGGCCAUUGUAA")), QByteArray("AUGGCCAUUGUAA"));
     }
 
     void translatesSixFrames()

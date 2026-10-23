@@ -11,40 +11,60 @@
 
 namespace {
 constexpr int ChunkSize = 1 << 20;
-
-gzFile gz(void *handle) { return static_cast<gzFile>(handle); }
 }
+
+struct LineReader::Inflater {
+    z_stream stream{};
+    QByteArray input = QByteArray(256 * 1024, Qt::Uninitialized);
+    bool inputEnded = false, memberEnded = false;
+};
 
 LineReader::LineReader() = default;
 
 LineReader::~LineReader() {
-    if (m_gz)
-        gzclose(gz(m_gz));
+    close();
+}
+
+void LineReader::close() {
+    if (m_z)
+        inflateEnd(&m_z->stream);
+    m_z.reset();
+    if (m_file)
+        fclose(m_file);
+    m_file = nullptr;
 }
 
 bool LineReader::open(const QString &path, QString *error) {
-    if (m_gz)
-        gzclose(gz(m_gz));
-    m_gz = gzopen(QFile::encodeName(path).constData(), "rb");
+    close();
     m_begin = m_end = 0;
-    m_bufferStart = m_lineStart = 0;
+    m_bufferStart = m_lineStart = m_consumed = 0;
     m_eof = m_failed = false;
-    if (!m_gz) {
+    m_file = fopen(QFile::encodeName(path).constData(), "rb");
+    if (!m_file) {
         if (error)
             *error = QString("Could not open %1: %2").arg(path, QString::fromLocal8Bit(strerror(errno)));
         return false;
     }
-    gzbuffer(gz(m_gz), 256 * 1024);
-    // gzdirect only knows once something has been read, so peek first.
-    const int c = gzgetc(gz(m_gz));
-    if (c != -1)
-        gzungetc(c, gz(m_gz));
-    m_compressed = !gzdirect(gz(m_gz));
+    // Gzip by its magic number, never by the file name.
+    unsigned char magic[2] = {0, 0};
+    const size_t got = fread(magic, 1, 2, m_file);
+    fseeko(m_file, 0, SEEK_SET);
+    m_compressed = got == 2 && magic[0] == 0x1f && magic[1] == 0x8b;
+    if (m_compressed) {
+        m_z = std::make_unique<Inflater>();
+        // 15 window bits plus 16 reads the gzip wrapper.
+        if (inflateInit2(&m_z->stream, 15 + 16) != Z_OK) {
+            m_z.reset();
+            if (error)
+                *error = "Could not start gzip decompression.";
+            return false;
+        }
+    }
     return true;
 }
 
 bool LineReader::seek(qint64 offset) {
-    if (!m_gz || gzseek(gz(m_gz), z_off_t(offset), SEEK_SET) < 0)
+    if (!m_file || m_compressed || fseeko(m_file, off_t(offset), SEEK_SET) != 0)
         return false;
     m_begin = m_end = 0;
     m_bufferStart = m_lineStart = offset;
@@ -53,7 +73,50 @@ bool LineReader::seek(qint64 offset) {
 }
 
 qint64 LineReader::fileOffset() const {
-    return m_gz ? qint64(gzoffset(gz(m_gz))) : 0;
+    if (!m_file)
+        return 0;
+    return m_z ? m_consumed - qint64(m_z->stream.avail_in) : qint64(ftello(m_file));
+}
+
+// Inflates up to capacity bytes: 0 at the end of the data, with m_failed set
+// when the data ended before its gzip stream did. Members follow each other
+// (bgzip, or cat a.gz b.gz); anything after the last one that is not another
+// member is ignored, as gzip does.
+int LineReader::inflateInto(char *out, int capacity) {
+    Inflater &z = *m_z;
+    for (;;) {
+        if (z.stream.avail_in == 0 && !z.inputEnded) {
+            const size_t n = fread(z.input.data(), 1, size_t(z.input.size()), m_file);
+            m_consumed += qint64(n);
+            z.inputEnded = n == 0;
+            z.stream.next_in = reinterpret_cast<Bytef *>(z.input.data());
+            z.stream.avail_in = uInt(n);
+        }
+        if (z.memberEnded) {
+            if (z.stream.avail_in == 0)
+                return 0;
+            if (z.stream.next_in[0] != 0x1f)
+                return 0;
+            inflateReset(&z.stream);
+            z.memberEnded = false;
+        }
+        if (z.stream.avail_in == 0 && z.inputEnded) {
+            m_failed = true;
+            return 0;
+        }
+        z.stream.next_out = reinterpret_cast<Bytef *>(out);
+        z.stream.avail_out = uInt(capacity);
+        const int result = inflate(&z.stream, Z_NO_FLUSH);
+        if (result == Z_STREAM_END)
+            z.memberEnded = true;
+        else if (result != Z_OK && result != Z_BUF_ERROR) {
+            m_failed = true;
+            return 0;
+        }
+        const int produced = capacity - int(z.stream.avail_out);
+        if (produced > 0)
+            return produced;
+    }
 }
 
 bool LineReader::fill() {
@@ -70,24 +133,27 @@ bool LineReader::fill() {
     }
     if (m_buffer.size() - m_end < ChunkSize)
         m_buffer.resize(m_end + ChunkSize);
-    const int read = gzread(gz(m_gz), m_buffer.data() + m_end, unsigned(m_buffer.size() - m_end));
-    if (read < 0) {
-        m_failed = true;
-        m_eof = true;
-        return false;
+    char *out = m_buffer.data() + m_end;
+    const int capacity = int(m_buffer.size() - m_end);
+    int read = 0;
+    if (m_z) {
+        read = inflateInto(out, capacity);
+    } else {
+        read = int(fread(out, 1, size_t(capacity), m_file));
+        m_failed = read == 0 && ferror(m_file);
     }
-    if (read == 0) {
+    if (read <= 0) {
         m_eof = true;
         return false;
     }
     if (m_tee)
-        fwrite(m_buffer.constData() + m_end, 1, size_t(read), m_tee);
+        fwrite(out, 1, size_t(read), m_tee);
     m_end += read;
     return true;
 }
 
 bool LineReader::readLine(QByteArray &line) {
-    if (!m_gz)
+    if (!m_file)
         return false;
     int searchFrom = m_begin;
     for (;;) {
@@ -160,6 +226,15 @@ void appendSequence(QByteArray &sequence, const QByteArray &line) {
 }
 
 bool FastxParser::next(FastxRecord &record) {
+    // A broken record at the end of a cut-off gzip file is the truncation's
+    // fault, so the truncation is what gets reported.
+    const bool ok = parseNext(record);
+    if (!ok && m_reader.failed())
+        m_error = "The file could not be decompressed; it may be truncated or corrupt.";
+    return ok;
+}
+
+bool FastxParser::parseNext(FastxRecord &record) {
     QByteArray line;
     qint64 lineStart = 0;
     for (;;) {
@@ -230,15 +305,25 @@ bool FastxParser::next(FastxRecord &record) {
     return true;
 }
 
+// Mostly A, C, G, T, U and N is nucleotide. Otherwise the IUPAC codes
+// decide it: proteins are full of residues no nucleotide code uses (E, F, I,
+// L, P, Q and the rare J, O, Z, X), while a file heavy in ambiguity codes
+// has none of them.
 Alphabet detectAlphabet(const std::vector<qint64> &letters) {
     qint64 total = 0;
     for (const qint64 n : letters)
         total += n;
     if (total == 0)
         return Alphabet::Nucleotide;
-    const qint64 nucleotide = letters['A' - 'A'] + letters['C' - 'A'] + letters['G' - 'A'] + letters['T' - 'A'] +
-                              letters['U' - 'A'] + letters['N' - 'A'];
-    return nucleotide >= total * 9 / 10 ? Alphabet::Nucleotide : Alphabet::Protein;
+    auto count = [&](const char *set) {
+        qint64 n = 0;
+        for (const char *c = set; *c; ++c)
+            n += letters[size_t(*c - 'A')];
+        return n;
+    };
+    if (count("ACGTUN") >= total * 9 / 10)
+        return Alphabet::Nucleotide;
+    return count("EFILPQJOZX") * 100 >= total ? Alphabet::Protein : Alphabet::Nucleotide;
 }
 
 qint64 n50(std::vector<quint32> lengths) {

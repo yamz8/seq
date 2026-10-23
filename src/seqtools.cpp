@@ -52,6 +52,11 @@ QByteArray reverseComplement(const QByteArray &sequence) {
     const qsizetype n = sequence.size();
     for (qsizetype i = 0; i < n; ++i)
         out[n - 1 - i] = tables.complement[uchar(sequence[i])];
+    // RNA stays RNA: with a U and no T, A pairs with U.
+    const bool rna = (sequence.contains('U') || sequence.contains('u')) && !sequence.contains('T') && !sequence.contains('t');
+    if (rna)
+        for (char &c : out)
+            c = c == 'T' ? 'U' : c == 't' ? 'u' : c;
     return out;
 }
 

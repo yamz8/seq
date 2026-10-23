@@ -10,6 +10,7 @@
 // The sequence work behind both the window and the command line: reverse
 // complement, translation, ORFs, and IUPAC motif search.
 
+// IUPAC codes complement too, case is kept, and RNA (U, no T) stays RNA.
 QByteArray reverseComplement(const QByteArray &sequence);
 // Frames 1, 2, 3 read the forward strand from offsets 0, 1, 2; -1, -2, -3
 // read the reverse complement the same way. Standard genetic code; a codon

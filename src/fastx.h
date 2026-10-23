@@ -14,8 +14,10 @@
 enum class Format { Unknown, Fasta, Fastq };
 enum class Alphabet { Nucleotide, Protein };
 
-// Line by line over a file through zlib, with the uncompressed offset of
-// every line, so the index can point back into the stream.
+// Line by line over a plain or gzipped file, with the uncompressed offset of
+// every line, so the index can point back into the stream. Gzip is inflated
+// directly rather than through gzread, which takes a file cut off mid-stream
+// for a whole one.
 class LineReader {
 public:
     LineReader();
@@ -39,8 +41,13 @@ public:
 
 private:
     bool fill();
+    int inflateInto(char *out, int capacity);
+    void close();
 
-    void *m_gz = nullptr;
+    struct Inflater;
+    std::unique_ptr<Inflater> m_z;
+    FILE *m_file = nullptr;
+    qint64 m_consumed = 0;
     QByteArray m_buffer;
     int m_begin = 0, m_end = 0;
     qint64 m_bufferStart = 0;
@@ -67,6 +74,7 @@ public:
 
 private:
     bool nextLine(QByteArray &line);
+    bool parseNext(FastxRecord &record);
 
     LineReader m_reader;
     Format m_format = Format::Unknown;
@@ -129,7 +137,7 @@ private:
     std::vector<qint64> m_composition = std::vector<qint64>(26, 0);
 };
 
-// Guesses the alphabet from letters: mostly A, C, G, T, U and N is nucleotide.
+// Guesses the alphabet from letter counts, A to Z.
 Alphabet detectAlphabet(const std::vector<qint64> &letterCounts);
 qint64 n50(std::vector<quint32> lengths);
 double gcPercent(qint64 gc, qint64 at);
