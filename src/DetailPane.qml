@@ -97,9 +97,12 @@ Item {
             Layout.fillHeight: true
             currentIndex: win.detailTab
 
-            // Sequence, with the per-base quality under it for reads.
+            // Sequence, with the per-base quality under it for reads. Bases
+            // read left to right in every language, so this never mirrors.
             ColumnLayout {
                 spacing: 8
+                LayoutMirroring.enabled: false
+                LayoutMirroring.childrenInherit: true
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -116,6 +119,7 @@ Item {
                         }
                         ListView {
                             id: sequenceView
+                            visible: !backend.recordLoading
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
@@ -147,6 +151,7 @@ Item {
                             }
                         }
                     }
+                    BusyLabel { visible: backend.recordLoading }
                     // Wide enough for the largest position in the record.
                     TextMetrics {
                         id: positionWidth
@@ -178,6 +183,8 @@ Item {
             // Six frames, standard genetic code.
             Rectangle {
                 color: win.panel
+                LayoutMirroring.enabled: false
+                LayoutMirroring.childrenInherit: true
                 radius: theme.radius
                 ListView {
                     id: translationView
@@ -187,6 +194,7 @@ Item {
                     model: backend.translationLines
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
+                    BusyLabel { visible: backend.recordLoading || backend.translating }
                     delegate: RowLayout {
                         required property string label
                         required property var start
@@ -239,7 +247,7 @@ Item {
                     Label { text: qsTr("bp"); color: win.dim }
                     Item { Layout.fillWidth: true }
                     Label {
-                        text: qsTr("%n ORFs", "", backend.orfs.length)
+                        text: qsTr("%n ORFs", "", backend.orfCount)
                         color: win.textColor
                     }
                 }
@@ -298,9 +306,10 @@ Item {
                                 }
                             }
                         }
+                        BusyLabel { visible: backend.recordLoading || backend.findingOrfs }
                         Label {
                             anchors.centerIn: parent
-                            visible: orfView.count === 0
+                            visible: orfView.count === 0 && !backend.recordLoading && !backend.findingOrfs
                             text: qsTr("No ORFs of at least %1 bp").arg(win.num(backend.orfMinLength))
                             color: win.dim
                         }
@@ -308,6 +317,14 @@ Item {
                 }
             }
         }
+    }
+
+    // A chromosome takes a moment to read, translate or search for ORFs.
+    component BusyLabel: Label {
+        anchors.centerIn: parent
+        text: qsTr("Loading…")
+        color: win.dim
+        font.pixelSize: 14
     }
 
     component Chip: Rectangle {

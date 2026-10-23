@@ -12,6 +12,7 @@
 #include <cstdio>
 
 #include "exporter.h"
+#include "problems.h"
 #include "fastx.h"
 #include "seqtools.h"
 
@@ -220,7 +221,7 @@ int translateCommand(const QStringList &arguments) {
         // Six records out for every one in, so this writes them itself.
         FastxParser parser;
         if (sameFile(command.argument(2), {command.argument(1)}))
-            return fail("Refusing to overwrite the file being read; choose a new file.");
+            return fail(problem(Problem::WouldOverwrite));
         if (!parser.open(command.argument(1), &result.error))
             return fail(result.error);
         AtomicWriter writer(command.argument(2));
@@ -230,11 +231,14 @@ int translateCommand(const QStringList &arguments) {
         while (parser.next(r)) {
             ++result.read;
             QByteArray out;
-            for (const int f : {1, 2, 3, -1, -2, -3}) {
+            const QList<QByteArray> proteins = translateSixFrames(r.sequence);
+            const int frames[] = {1, 2, 3, -1, -2, -3};
+            for (int i = 0; i < 6; ++i) {
+                const int f = frames[i];
                 FastxRecord t;
                 t.id = r.id + "_frame" + QByteArray::number(f);
                 t.description = r.description;
-                t.sequence = translate(r.sequence, f);
+                t.sequence = proteins[i];
                 writeRecord(out, t, Format::Fasta);
                 ++result.written;
             }

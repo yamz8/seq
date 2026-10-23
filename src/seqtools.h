@@ -16,6 +16,8 @@ QByteArray reverseComplement(const QByteArray &sequence);
 // read the reverse complement the same way. Standard genetic code; a codon
 // with any ambiguous base is X, a stop is *.
 QByteArray translate(const QByteArray &sequence, int frame);
+// Frames 1, 2, 3, -1, -2, -3, in that order.
+QList<QByteArray> translateSixFrames(const QByteArray &sequence);
 
 struct Orf {
     int frame = 1;

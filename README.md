@@ -1,5 +1,7 @@
 # Seq
 
+[![Test](https://github.com/yamz8/seq/actions/workflows/test.yml/badge.svg)](https://github.com/yamz8/seq/actions/workflows/test.yml)
+
 ![Seq showing a motif search in a FASTQ file, with the per-base quality under the sequence](docs/screenshot.png)
 
 Seq opens a FASTA or FASTQ file fast, lets you look through its sequences,
@@ -16,7 +18,9 @@ The command is `seqview`, because `seq` already belongs to coreutils.
   new file, written atomically.
 - **Millions of reads**: the file is indexed once, on a background thread with
   a progress bar, and the record list only draws the rows on screen. A million
-  150 bp reads, gzipped, index in about two seconds.
+  150 bp reads, gzipped, index in about two seconds. A whole chromosome
+  loads, translates and finds its ORFs in the background too, so the window
+  never freezes.
 - **Every record**: ID, length, GC% and mean Phred quality in the list. The
   selected record shows its sequence wrapped at 60 or 80 columns with a
   position ruler and subtly colored bases, and a per-base quality chart for
@@ -102,8 +106,15 @@ input), N50, GC%, IUPAC motifs on both strands, reverse complement, six-frame
 translation, ORFs, filtering into a new file, the summary exports, and the
 window's backend.
 
-Translations live in `src/i18n/`, one JSON file per Omarchy language code,
-keyed by the English text.
+`tests/formats.py` writes FASTA and FASTQ files of every kind Seq reads (each
+extension, plain and gzipped, multi-member gzip, multi-line FASTQ, Windows
+line endings, RNA, ambiguity codes, a large chromosome) and broken ones, and
+checks every command against its own independent parser. GitHub Actions runs
+the build, `bin/test` and `tests/formats.py` on Arch for every push.
+
+Seq speaks all 50 Omarchy languages and follows the one picked under Setup >
+Language, right to left included. Translations live in `src/i18n/`, one JSON
+file per Omarchy language code, keyed by the English text.
 
 ## License
 

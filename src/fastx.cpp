@@ -1,4 +1,5 @@
 #include "fastx.h"
+#include "problems.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -42,7 +43,7 @@ bool LineReader::open(const QString &path, QString *error) {
     m_file = fopen(QFile::encodeName(path).constData(), "rb");
     if (!m_file) {
         if (error)
-            *error = QString("Could not open %1: %2").arg(path, QString::fromLocal8Bit(strerror(errno)));
+            *error = problem(Problem::CouldNotOpen, {path, QString::fromLocal8Bit(strerror(errno))});
         return false;
     }
     // Gzip by its magic number, never by the file name.
@@ -56,7 +57,7 @@ bool LineReader::open(const QString &path, QString *error) {
         if (inflateInit2(&m_z->stream, 15 + 16) != Z_OK) {
             m_z.reset();
             if (error)
-                *error = "Could not start gzip decompression.";
+                *error = problem(Problem::NoGzip);
             return false;
         }
     }
@@ -189,7 +190,7 @@ bool FastxParser::openAt(const QString &path, qint64 offset, Format format, QStr
     m_format = format;
     if (!m_reader.seek(offset)) {
         if (error)
-            *error = QString("Could not seek in %1").arg(path);
+            *error = problem(Problem::CouldNotSeek, {path});
         return false;
     }
     return true;
@@ -230,7 +231,7 @@ bool FastxParser::next(FastxRecord &record) {
     // fault, so the truncation is what gets reported.
     const bool ok = parseNext(record);
     if (!ok && m_reader.failed())
-        m_error = "The file could not be decompressed; it may be truncated or corrupt.";
+        m_error = problem(Problem::Corrupt);
     return ok;
 }
 
@@ -241,7 +242,7 @@ bool FastxParser::parseNext(FastxRecord &record) {
         const bool pending = m_hasPending;
         if (!nextLine(line)) {
             if (m_reader.failed())
-                m_error = "The file could not be decompressed; it may be truncated or corrupt.";
+                m_error = problem(Problem::Corrupt);
             return false;
         }
         // A line peeked by the previous record keeps its own start.
@@ -252,12 +253,12 @@ bool FastxParser::parseNext(FastxRecord &record) {
     if (m_format == Format::Unknown)
         m_format = line.startsWith('>') ? Format::Fasta : line.startsWith('@') ? Format::Fastq : Format::Unknown;
     if (m_format == Format::Unknown) {
-        m_error = "This is not a FASTA or FASTQ file: it should start with > or @.";
+        m_error = problem(Problem::NotSequences);
         return false;
     }
     const char marker = m_format == Format::Fasta ? '>' : '@';
     if (!line.startsWith(marker)) {
-        m_error = QString("Expected a record starting with %1 at byte %2.").arg(QChar(marker)).arg(lineStart);
+        m_error = problem(Problem::ExpectedRecord, {QString(QChar(marker)), QString::number(lineStart)});
         return false;
     }
     record.offset = lineStart;
@@ -276,7 +277,7 @@ bool FastxParser::parseNext(FastxRecord &record) {
             appendSequence(record.sequence, line);
         }
         if (m_reader.failed()) {
-            m_error = "The file could not be decompressed; it may be truncated or corrupt.";
+            m_error = problem(Problem::Corrupt);
             return false;
         }
         return true;
@@ -291,15 +292,15 @@ bool FastxParser::parseNext(FastxRecord &record) {
         appendSequence(record.sequence, line);
     }
     if (!plus) {
-        m_error = QString("Record %1 has no + line.").arg(QString::fromUtf8(record.id));
+        m_error = problem(Problem::NoPlusLine, {QString::fromUtf8(record.id)});
         return false;
     }
     // Quality may start with @ or +, so it is read by length, not by marker.
     while (record.quality.size() < record.sequence.size() && m_reader.readLine(line))
         record.quality += line.trimmed();
     if (record.quality.size() != record.sequence.size()) {
-        m_error = QString("Record %1 has %2 bases but %3 quality scores.")
-                      .arg(QString::fromUtf8(record.id)).arg(record.sequence.size()).arg(record.quality.size());
+        m_error = problem(Problem::QualityLength, {QString::fromUtf8(record.id), QString::number(record.sequence.size()),
+                                                   QString::number(record.quality.size())});
         return false;
     }
     return true;
@@ -404,7 +405,7 @@ bool FastxIndex::build(const QString &path, const QString &cachePath, std::atomi
         } else {
             cache = fopen(QFile::encodeName(cachePath).constData(), "wb");
             if (!cache) {
-                m_error = QString("Could not write the decompressed copy to %1.").arg(cachePath);
+                m_error = problem(Problem::CouldNotCache, {cachePath});
                 return false;
             }
             parser.reader().teeTo(cache);
@@ -422,15 +423,24 @@ bool FastxIndex::build(const QString &path, const QString &cachePath, std::atomi
         entry.idLength = quint16(qMin<qsizetype>(record.id.size(), 0xffff));
         m_ids.append(record.id.constData(), entry.idLength);
         entry.length = quint32(record.sequence.size());
+        // One count per byte value in the hot loop; GC, AT, composition and
+        // weight all come from the 256 counts after it.
+        qint64 counts[256] = {};
+        for (const char c : record.sequence)
+            ++counts[uchar(c)];
         quint32 gc = 0, at = 0;
         double weight = 0;
-        for (const char c : record.sequence) {
+        for (int c = 0; c < 256; ++c) {
+            if (!counts[c])
+                continue;
             const uchar upper = uchar(c) & 0xdf;
             if (upper >= 'A' && upper <= 'Z')
-                ++m_composition[upper - 'A'];
-            gc += upper == 'G' || upper == 'C';
-            at += upper == 'A' || upper == 'T' || upper == 'U';
-            weight += masses.table[uchar(c)];
+                m_composition[upper - 'A'] += counts[c];
+            if (upper == 'G' || upper == 'C')
+                gc += quint32(counts[c]);
+            if (upper == 'A' || upper == 'T' || upper == 'U')
+                at += quint32(counts[c]);
+            weight += masses.table[c] * double(counts[c]);
         }
         entry.gc = gc;
         entry.at = at;
@@ -439,7 +449,7 @@ bool FastxIndex::build(const QString &path, const QString &cachePath, std::atomi
         m_entries.push_back(entry);
         if ((++count & 0xfff) == 0) {
             if (cancel && cancel->load()) {
-                m_error = "Cancelled.";
+                m_error = problem(Problem::Cancelled);
                 break;
             }
             if (progress)
@@ -452,7 +462,7 @@ bool FastxIndex::build(const QString &path, const QString &cachePath, std::atomi
         m_error = parser.error();
     m_format = parser.format();
     if (m_error.isEmpty() && m_entries.empty())
-        m_error = "There are no records in this file.";
+        m_error = problem(Problem::NoRecords);
     // FASTQ is always reads; FASTA is whatever its letters say.
     m_alphabet = m_format == Format::Fastq ? Alphabet::Nucleotide : detectAlphabet(m_composition);
     if (progress)

@@ -15,6 +15,7 @@ HEADERS += \
     src/filepicker.h \
     src/models.h \
     src/portalfilepicker.h \
+    src/problems.h \
     src/seqtools.h \
     src/theme.h \
     src/translator.h
@@ -28,6 +29,7 @@ SOURCES += \
     src/fastx.cpp \
     src/models.cpp \
     src/portalfilepicker.cpp \
+    src/problems.cpp \
     src/seqtools.cpp \
     src/theme.cpp \
     src/translator.cpp

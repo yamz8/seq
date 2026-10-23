@@ -1,4 +1,5 @@
 #include "seqtools.h"
+#include "problems.h"
 
 #include <algorithm>
 
@@ -60,24 +61,40 @@ QByteArray reverseComplement(const QByteArray &sequence) {
     return out;
 }
 
-QByteArray translate(const QByteArray &sequence, int frame) {
-    const QByteArray strand = frame < 0 ? reverseComplement(sequence) : sequence;
-    const qsizetype offset = qAbs(frame) - 1;
-    QByteArray protein;
-    protein.reserve((strand.size() - offset) / 3 + 1);
-    for (qsizetype i = offset; i + 2 < strand.size(); i += 3) {
-        const int a = tables.codonIndex[uchar(strand[i])], b = tables.codonIndex[uchar(strand[i + 1])],
-                  c = tables.codonIndex[uchar(strand[i + 2])];
-        protein += a < 0 || b < 0 || c < 0 ? 'X' : StandardCode[a * 16 + b * 4 + c];
+namespace {
+// One strand from an offset, into a buffer sized up front.
+QByteArray translateStrand(const QByteArray &strand, qsizetype offset) {
+    const qsizetype codons = qMax<qsizetype>(0, (strand.size() - offset) / 3);
+    QByteArray protein(codons, Qt::Uninitialized);
+    const uchar *s = reinterpret_cast<const uchar *>(strand.constData()) + offset;
+    char *out = protein.data();
+    for (qsizetype i = 0; i < codons; ++i, s += 3) {
+        const int a = tables.codonIndex[s[0]], b = tables.codonIndex[s[1]], c = tables.codonIndex[s[2]];
+        out[i] = (a | b | c) < 0 ? 'X' : StandardCode[a * 16 + b * 4 + c];
     }
     return protein;
+}
+}
+
+QByteArray translate(const QByteArray &sequence, int frame) {
+    return translateStrand(frame < 0 ? reverseComplement(sequence) : sequence, qAbs(frame) - 1);
+}
+
+QList<QByteArray> translateSixFrames(const QByteArray &sequence) {
+    // The reverse strand once for all three of its frames.
+    const QByteArray reverse = reverseComplement(sequence);
+    return {translateStrand(sequence, 0), translateStrand(sequence, 1), translateStrand(sequence, 2),
+            translateStrand(reverse, 0), translateStrand(reverse, 1), translateStrand(reverse, 2)};
 }
 
 QVector<Orf> findOrfs(const QByteArray &sequence, int minLength) {
     QVector<Orf> orfs;
     const qint64 n = sequence.size();
-    for (const int frame : {1, 2, 3, -1, -2, -3}) {
-        const QByteArray protein = translate(sequence, frame);
+    const QList<QByteArray> frames = translateSixFrames(sequence);
+    const int order[] = {1, 2, 3, -1, -2, -3};
+    for (int f = 0; f < 6; ++f) {
+        const int frame = order[f];
+        const QByteArray &protein = frames[f];
         const qint64 offset = qAbs(frame) - 1;
         qsizetype open = -1;
         for (qsizetype i = 0; i < protein.size(); ++i) {
@@ -109,14 +126,14 @@ bool Motif::compile(const QByteArray &text, Alphabet alphabet, QString *error) {
     m_isProtein = alphabet == Alphabet::Protein;
     if (m_protein.isEmpty()) {
         if (error)
-            *error = "Type a motif to search for.";
+            *error = problem(Problem::EmptyMotif);
         return false;
     }
     for (const char c : m_protein) {
         const quint8 bits = tables.mask[uchar(c)];
         if (!m_isProtein && !bits) {
             if (error)
-                *error = QString("%1 is not an IUPAC nucleotide code.").arg(QChar(c));
+                *error = problem(Problem::NotIupac, {QString(QChar(c))});
             return false;
         }
         m_forward.append(m_isProtein ? quint8(c) : bits);

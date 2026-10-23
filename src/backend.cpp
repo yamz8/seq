@@ -12,6 +12,7 @@
 
 #include "filepicker.h"
 #include "portalfilepicker.h"
+#include "problems.h"
 #include "seqtools.h"
 
 namespace {
@@ -19,6 +20,8 @@ constexpr qsizetype MaxMatches = 200000;
 constexpr int MaxOrfs = 2000;
 constexpr int MaxQualityBars = 4000;
 constexpr int MaxMotif = 1000;
+// Records longer than this load, translate and find ORFs on a worker.
+constexpr qsizetype LargeRecord = 2'000'000;
 
 QVariantList toList(const QVector<double> &values) {
     QVariantList list;
@@ -44,6 +47,26 @@ Backend::Backend(FilePicker *picker, QObject *parent)
         emit progressChanged();
     });
     connect(&m_indexWatcher, &QFutureWatcher<IndexResult>::finished, this, &Backend::indexFinished);
+    connect(&m_recordWatcher, &QFutureWatcher<RecordResult>::finished, this, [this] {
+        RecordResult result = m_recordWatcher.result();
+        applyRecord(result.request, result.ok, std::move(result.record), std::move(result.qualities));
+    });
+    connect(&m_translateWatcher, &QFutureWatcher<TranslateResult>::finished, this, [this] {
+        TranslateResult result = m_translateWatcher.result();
+        if (result.request != m_recordRequest)
+            return;
+        m_translating = false;
+        m_translationLines.setSegments(std::move(result.frames), m_lineWidth);
+        emit loadingChanged();
+    });
+    connect(&m_orfWatcher, &QFutureWatcher<OrfResult>::finished, this, [this] {
+        OrfResult result = m_orfWatcher.result();
+        if (result.request != m_recordRequest || result.generation != m_orfRequest)
+            return;
+        m_findingOrfs = false;
+        applyOrfs(std::move(result.orfs));
+        emit loadingChanged();
+    });
     connect(&m_searchWatcher, &QFutureWatcher<SearchResult>::finished, this, &Backend::searchFinished);
     connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
         const ExportResult result = m_exportWatcher.result();
@@ -73,7 +96,10 @@ bool Backend::compressed() const {
     return m_index && m_index->readablePath() != m_index->path();
 }
 
-void Backend::setError(const QString &message) {
+void Backend::setError(const QString &text) {
+    // Messages from reading and writing files come in English; the window
+    // shows them in the Omarchy language.
+    const QString message = translatedProblem(text);
     if (message == m_error)
         return;
     m_error = message;
@@ -101,6 +127,9 @@ void Backend::setBusy(const QString &kind) {
 }
 
 void Backend::cancelWork() {
+    m_recordWatcher.waitForFinished();
+    m_translateWatcher.waitForFinished();
+    m_orfWatcher.waitForFinished();
     m_cancel = true;
     m_indexWatcher.waitForFinished();
     m_searchWatcher.waitForFinished();
@@ -109,7 +138,10 @@ void Backend::cancelWork() {
 }
 
 void Backend::waitForIdle() {
-    while (busy()) {
+    while (busy() || m_recordLoading || m_translating || m_findingOrfs) {
+        m_recordWatcher.waitForFinished();
+        m_translateWatcher.waitForFinished();
+        m_orfWatcher.waitForFinished();
         m_indexWatcher.waitForFinished();
         m_searchWatcher.waitForFinished();
         m_exportWatcher.waitForFinished();
@@ -243,41 +275,82 @@ void Backend::move(int delta) {
     select(m_currentRow < 0 ? 0 : m_currentRow + delta);
 }
 
+// One bar per base, or per bucket of bases averaged for long reads.
+QVariantList Backend::qualityBars(const QByteArray &quality) {
+    QVariantList bars;
+    const qsizetype n = quality.size(), count = qMin<qsizetype>(n, MaxQualityBars);
+    for (qsizetype b = 0; b < count; ++b) {
+        const qsizetype from = b * n / count, to = qMax(from + 1, (b + 1) * n / count);
+        double sum = 0;
+        for (qsizetype i = from; i < to; ++i)
+            sum += qMax(0, int(uchar(quality[i])) - 33);
+        bars << sum / double(to - from);
+    }
+    return bars;
+}
+
 void Backend::loadRecord(qsizetype record) {
     m_currentRecord = record;
-    m_record = FastxRecord();
-    if (!m_index->read(record, m_record))
-        setError(tr("Could not read record %1 back from the file.").arg(record + 1));
+    const int request = ++m_recordRequest;
     const IndexEntry &e = m_index->entry(record);
+    // What the index knows shows at once; the sequence follows.
     m_current = QVariantMap{
-        {"id", QString::fromUtf8(m_record.id)},
-        {"description", QString::fromUtf8(m_record.description)},
+        {"id", QString::fromUtf8(m_index->id(record))},
+        {"description", QString()},
         {"length", qint64(e.length)},
         {"gc", gcPercent(e.gc, e.at)},
         {"weight", double(e.weight)},
         {"quality", double(e.meanQuality)},
         {"number", qint64(record + 1)},
     };
+    m_record = FastxRecord();
     m_qualities.clear();
-    if (!m_record.quality.isEmpty()) {
-        // Long reads get one bar per bucket of bases, averaged.
-        const qsizetype n = m_record.quality.size();
-        const qsizetype bars = qMin<qsizetype>(n, MaxQualityBars);
-        for (qsizetype b = 0; b < bars; ++b) {
-            const qsizetype from = b * n / bars, to = qMax(from + 1, (b + 1) * n / bars);
-            double sum = 0;
-            for (qsizetype i = from; i < to; ++i)
-                sum += qMax(0, int(uchar(m_record.quality[i])) - 33);
-            m_qualities << sum / double(to - from);
-        }
-    }
     m_reversed = false;
     m_orfHighlight.clear();
-    m_sequenceLines.setSegments({{QString(), m_record.sequence, {}}}, m_lineWidth);
+    m_sequenceLines.setSegments({}, m_lineWidth);
     m_translationLines.setSegments({}, m_lineWidth);
     m_orfList.clear();
     m_orfs.clear();
     m_orfsFound = false;
+    m_pendingJump = -1;
+    m_translating = m_findingOrfs = false;
+
+    // A chromosome takes a while to read; anything smaller is instant.
+    if (e.length <= LargeRecord) {
+        FastxRecord loaded;
+        const bool ok = m_index->read(record, loaded);
+        applyRecord(request, ok, std::move(loaded), qualityBars(loaded.quality));
+        return;
+    }
+    m_recordLoading = true;
+    emit loadingChanged();
+    const auto index = m_index;
+    m_recordWatcher.setFuture(QtConcurrent::run([index, record, request] {
+        RecordResult result;
+        result.request = request;
+        result.ok = index->read(record, result.record);
+        result.qualities = qualityBars(result.record.quality);
+        return result;
+    }));
+}
+
+void Backend::applyRecord(int request, bool ok, FastxRecord record, QVariantList qualities) {
+    if (request != m_recordRequest)
+        return;
+    if (!ok)
+        setError(tr("Could not read record %1 back from the file.").arg(m_currentRecord + 1));
+    m_record = std::move(record);
+    m_current["description"] = QString::fromUtf8(m_record.description);
+    m_qualities = std::move(qualities);
+    m_sequenceLines.setSegments({{QString(), m_record.sequence, {}}}, m_lineWidth);
+    if (m_recordLoading) {
+        m_recordLoading = false;
+        emit loadingChanged();
+    }
+    refreshHighlights();
+    if (m_pendingJump >= 0)
+        emit jumpToLine(m_sequenceLines.rowFor(0, std::exchange(m_pendingJump, -1)));
+    emit currentChanged();
     // The tab on screen follows the record; the others wait until shown.
     if (m_detailTab == 1)
         translateCurrent();
@@ -316,7 +389,7 @@ void Backend::refreshHighlights() {
 }
 
 void Backend::toggleReverse() {
-    if (!m_index || m_currentRecord < 0 || protein())
+    if (!m_index || m_currentRecord < 0 || protein() || m_recordLoading)
         return;
     m_reversed = !m_reversed;
     m_sequenceLines.setSegments({{QString(), m_reversed ? reverseComplement(m_record.sequence) : m_record.sequence, {}}},
@@ -332,13 +405,30 @@ void Backend::toggleLineWidth() {
     emit lineWidthChanged();
 }
 
-void Backend::translateCurrent() {
-    if (m_currentRecord < 0 || protein() || m_translationLines.rowCount() > 0)
-        return;
+std::vector<LinesModel::Segment> Backend::sixFrames(const QByteArray &sequence) {
+    const QList<QByteArray> proteins = translateSixFrames(sequence);
+    const char *labels[] = {"+1", "+2", "+3", "−1", "−2", "−3"};
     std::vector<LinesModel::Segment> frames;
-    for (const int frame : {1, 2, 3, -1, -2, -3})
-        frames.push_back({(frame > 0 ? "+" : "−") + QString::number(qAbs(frame)), translate(m_record.sequence, frame), {}});
-    m_translationLines.setSegments(std::move(frames), m_lineWidth);
+    for (int f = 0; f < 6; ++f)
+        frames.push_back({QString::fromUtf8(labels[f]), proteins[f], {}});
+    return frames;
+}
+
+void Backend::translateCurrent() {
+    // A record still loading is translated once it arrives, if still shown.
+    if (m_currentRecord < 0 || protein() || m_recordLoading || m_translating || m_translationLines.rowCount() > 0)
+        return;
+    if (m_record.sequence.size() <= LargeRecord) {
+        m_translationLines.setSegments(sixFrames(m_record.sequence), m_lineWidth);
+        return;
+    }
+    m_translating = true;
+    emit loadingChanged();
+    const QByteArray sequence = m_record.sequence;
+    const int request = m_recordRequest;
+    m_translateWatcher.setFuture(QtConcurrent::run([sequence, request] {
+        return TranslateResult{request, sixFrames(sequence)};
+    }));
 }
 
 void Backend::setOrfMinLength(int length) {
@@ -354,10 +444,25 @@ void Backend::setOrfMinLength(int length) {
 }
 
 void Backend::findOrfs() {
-    if (m_currentRecord < 0 || protein())
+    if (m_currentRecord < 0 || protein() || m_recordLoading)
         return;
-    m_orfList = ::findOrfs(m_record.sequence, m_orfMinLength);
     m_orfsFound = true;
+    if (m_record.sequence.size() <= LargeRecord) {
+        applyOrfs(::findOrfs(m_record.sequence, m_orfMinLength));
+        return;
+    }
+    // A newer search replaces one still running; its result is dropped.
+    m_findingOrfs = true;
+    emit loadingChanged();
+    const QByteArray sequence = m_record.sequence;
+    const int request = m_recordRequest, minLength = m_orfMinLength, generation = ++m_orfRequest;
+    m_orfWatcher.setFuture(QtConcurrent::run([sequence, request, minLength, generation] {
+        return OrfResult{request, generation, ::findOrfs(sequence, minLength)};
+    }));
+}
+
+void Backend::applyOrfs(QVector<Orf> orfs) {
+    m_orfList = std::move(orfs);
     m_orfs.clear();
     for (int i = 0; i < qMin(int(m_orfList.size()), MaxOrfs); ++i) {
         const Orf &o = m_orfList[i];
@@ -504,7 +609,10 @@ void Backend::focusMatch(int index) {
     emit searchChanged();
     if (m.position >= 0) {
         const qint64 n = m_record.sequence.size();
-        emit jumpToLine(m_sequenceLines.rowFor(0, m_reversed ? n - m.position - m_motifLength : m.position));
+        if (m_recordLoading)
+            m_pendingJump = m.position;
+        else
+            emit jumpToLine(m_sequenceLines.rowFor(0, m_reversed ? n - m.position - m_motifLength : m.position));
     }
 }
 
@@ -574,7 +682,7 @@ bool Backend::exportTo(const QString &kind, const QString &path) {
         return false;
     QString error;
     if (sameFile(path, sources())) {
-        setError(tr("Refusing to overwrite the file being read; choose a new file."));
+        setError(problem(Problem::WouldOverwrite));
         return false;
     }
     if (kind == "json" || kind == "csv") {
@@ -596,6 +704,8 @@ bool Backend::exportTo(const QString &kind, const QString &path) {
         return true;
     }
     if (kind == "selected") {
+        if (m_recordLoading)
+            return false;
         QByteArray data;
         writeRecord(data, m_record, m_index->format());
         if (!writeFile(path, data, sources(), &error)) {
@@ -635,7 +745,7 @@ bool Backend::exportTo(const QString &kind, const QString &path) {
 }
 
 void Backend::copyCurrent() {
-    if (m_currentRecord < 0)
+    if (m_currentRecord < 0 || m_recordLoading)
         return;
     QByteArray data;
     FastxRecord shown = m_record;

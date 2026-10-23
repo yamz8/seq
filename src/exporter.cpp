@@ -1,4 +1,5 @@
 #include "exporter.h"
+#include "problems.h"
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -18,7 +19,7 @@ AtomicWriter::~AtomicWriter() {
 bool AtomicWriter::open(QString *error) {
     if (!m_file.open(QIODevice::WriteOnly)) {
         if (error)
-            *error = QString("Could not write %1: %2").arg(m_file.fileName(), m_file.errorString());
+            *error = problem(Problem::CouldNotWrite, {m_file.fileName(), m_file.errorString()});
         return false;
     }
     if (m_file.fileName().endsWith(".gz", Qt::CaseInsensitive)) {
@@ -27,7 +28,7 @@ bool AtomicWriter::open(QString *error) {
         if (deflateInit2(&m_gzip->stream, 6, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
             m_gzip.reset();
             if (error)
-                *error = "Could not start gzip compression.";
+                *error = problem(Problem::NoGzipOut);
             return false;
         }
     }
@@ -67,12 +68,12 @@ bool AtomicWriter::commit(QString *error) {
         m_file.cancelWriting();
         m_file.commit();
         if (error)
-            *error = QString("Could not write %1: %2").arg(m_file.fileName(), m_file.errorString());
+            *error = problem(Problem::CouldNotWrite, {m_file.fileName(), m_file.errorString()});
         return false;
     }
     if (!m_file.commit()) {
         if (error)
-            *error = QString("Could not save %1: %2").arg(m_file.fileName(), m_file.errorString());
+            *error = problem(Problem::CouldNotSave, {m_file.fileName(), m_file.errorString()});
         return false;
     }
     return true;
@@ -97,7 +98,7 @@ StreamResult streamRecords(const QString &input, const QString &output, const QS
                            const std::atomic<bool> *cancel) {
     StreamResult result;
     if (sameFile(output, sources + QStringList{input})) {
-        result.error = "Refusing to overwrite the file being read; choose a new file.";
+        result.error = problem(Problem::WouldOverwrite);
         return result;
     }
     FastxParser parser;
@@ -110,7 +111,7 @@ StreamResult streamRecords(const QString &input, const QString &output, const QS
     QByteArray buffer;
     while (parser.next(record)) {
         if (cancel && cancel->load()) {
-            result.error = "Cancelled.";
+            result.error = problem(Problem::Cancelled);
             return result;
         }
         if (keep(result.read++, record)) {
@@ -201,7 +202,7 @@ QByteArray summaryCsv(const FastxIndex &index, const SummaryStats &s) {
 bool writeFile(const QString &path, const QByteArray &data, const QStringList &sources, QString *error) {
     if (sameFile(path, sources)) {
         if (error)
-            *error = "Refusing to overwrite the file being read; choose a new file.";
+            *error = problem(Problem::WouldOverwrite);
         return false;
     }
     AtomicWriter writer(path);
@@ -209,19 +210,27 @@ bool writeFile(const QString &path, const QByteArray &data, const QStringList &s
 }
 
 Alphabet sniffAlphabet(const QString &path, Format *format) {
-    FastxParser parser;
+    // Lines rather than records, so a single chromosome is not read whole
+    // just to see its first megabase.
+    LineReader reader;
     std::vector<qint64> letters(26, 0);
     qint64 seen = 0;
-    FastxRecord record;
-    if (parser.open(path, nullptr))
-        while (seen < (1 << 20) && parser.next(record))
-            for (const char c : record.sequence) {
+    Format found = Format::Unknown;
+    QByteArray line;
+    if (reader.open(path, nullptr))
+        while (seen < (1 << 20) && found != Format::Fastq && reader.readLine(line)) {
+            if (found == Format::Unknown && !line.trimmed().isEmpty())
+                found = line.startsWith('@') ? Format::Fastq : line.startsWith('>') ? Format::Fasta : Format::Unknown;
+            if (line.startsWith('>'))
+                continue;
+            for (const char c : line) {
                 const uchar upper = uchar(c) & 0xdf;
                 if (upper >= 'A' && upper <= 'Z')
                     ++letters[upper - 'A'];
                 ++seen;
             }
+        }
     if (format)
-        *format = parser.format();
-    return parser.format() == Format::Fastq ? Alphabet::Nucleotide : detectAlphabet(letters);
+        *format = found;
+    return found == Format::Fastq ? Alphabet::Nucleotide : detectAlphabet(letters);
 }

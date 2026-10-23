@@ -1,0 +1,21 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Omarchy is Arch, so build against the Qt it ships.
+    container: archlinux:latest
+    steps:
+      - name: Install Qt and the build tools
+        run: pacman -Syu --noconfirm --needed base-devel git python qt6-base qt6-declarative qt6-svg qt6-wayland zlib
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bin/build
+      - name: Unit tests
+        run: bin/test
+      - name: Every format against a reference
+        run: CHROMOSOME_BASES=5000000 tests/formats.py build/seqview

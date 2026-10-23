@@ -13,6 +13,7 @@
 #include "exporter.h"
 #include "fastx.h"
 #include "filepicker.h"
+#include "problems.h"
 #include "seqtools.h"
 #include "theme.h"
 #include "translator.h"
@@ -354,6 +355,47 @@ private slots:
         QCOMPARE(backend.records()->rowCount(), 3);
     }
 
+    void largeRecordsLoadInTheBackground()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("chrom.fa");
+        // Three megabases with one ORF planted early, then a small record.
+        QByteArray chromosome(3000000, 'C');
+        const QByteArray orf = "ATGAAACCCGGGTTTAAACCCGGGAAATAG";
+        chromosome.replace(1000, orf.size(), orf);
+        write(path, ">chr\n" + chromosome + "\n>small\nACGT\n");
+        FakePicker picker;
+        Backend backend(&picker);
+        backend.openPath(path);
+        backend.waitForIdle();
+        QVERIFY(!backend.recordLoading());
+        QCOMPARE(backend.currentSequence().size(), qsizetype(3000000));
+        QCOMPARE(backend.sequenceLines()->rowCount(), 50000);
+
+        backend.setDetailTab(1);
+        QVERIFY(backend.translating());
+        backend.waitForIdle();
+        QCOMPARE(backend.translationLines()->rowFor(5, 0), 5 * 16667);
+
+        backend.setOrfMinLength(30);
+        backend.setDetailTab(2);
+        QVERIFY(backend.findingOrfs());
+        backend.waitForIdle();
+        QCOMPARE(backend.orfs().size(), 1);
+        QCOMPARE(backend.orfs()[0].toMap().value("start").toLongLong(), qint64(1001));
+
+        // Moving on before a large record arrives shows the record moved to.
+        backend.setDetailTab(0);
+        backend.select(1);
+        backend.select(0);
+        QVERIFY(backend.recordLoading());
+        backend.select(1);
+        backend.waitForIdle();
+        QCoreApplication::processEvents();
+        QCOMPARE(backend.currentSequence(), QByteArray("ACGT"));
+        QCOMPARE(backend.current().value("id").toString(), QString("small"));
+    }
+
     void decompressedCopyLeavesNoFile()
     {
         QTemporaryDir dir;
@@ -576,6 +618,21 @@ private slots:
         QCOMPARE(translator.translate("Main", "%n clips", nullptr, 25), QString("%n клипов"));
         QCOMPARE(Translator::pluralCategory("ar", 11), QString("many"));
         QCOMPARE(Translator::pluralCategory("ja", 1), QString("other"));
+    }
+
+    void windowTranslatesFileProblems()
+    {
+        QTemporaryDir dir;
+        write(dir.path() + "/language", "da\n");
+        write(dir.path() + "/da.json", R"({"Record %1 has %2 bases but %3 quality scores.": "Post %1 har %2 baser, men %3 kvalitetsværdier."})");
+        Translator translator(dir.path() + "/language", dir.path());
+        QCoreApplication::installTranslator(&translator);
+        const QString english = problem(Problem::QualityLength, {"r%2", "10", "8"});
+        QCOMPARE(english, QString("Record r%2 has 10 bases but 8 quality scores."));
+        QCOMPARE(translatedProblem(english), QString("Post r%2 har 10 baser, men 8 kvalitetsværdier."));
+        QCOMPARE(translatedProblem("Something else."), QString("Something else."));
+        QCoreApplication::removeTranslator(&translator);
+        QCOMPARE(translatedProblem(english), english);
     }
 
     void shippedCatalogsAreValid()

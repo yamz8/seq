@@ -1,4 +1,5 @@
 #include "chart.h"
+#include "problems.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -111,7 +112,7 @@ bool writeChartSvg(const QString &path, const ChartData &chart, QSize size, QStr
     QTemporaryFile temporary(QFileInfo(path).absolutePath() + "/.seqview-XXXXXX.svg");
     if (!temporary.open()) {
         if (error)
-            *error = QString("Could not write to %1.").arg(QFileInfo(path).absolutePath());
+            *error = problem(Problem::CouldNotWriteTo, {QFileInfo(path).absolutePath()});
         return false;
     }
     temporary.close();
@@ -127,7 +128,7 @@ bool writeChartSvg(const QString &path, const ChartData &chart, QSize size, QStr
     QFile::remove(path);
     if (!QFile::rename(temporary.fileName(), path)) {
         if (error)
-            *error = QString("Could not save %1.").arg(path);
+            *error = problem(Problem::CouldNotSaveFile, {path});
         return false;
     }
     temporary.setAutoRemove(false);

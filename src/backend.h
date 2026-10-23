@@ -49,11 +49,17 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantMap current READ current NOTIFY currentChanged)
     Q_PROPERTY(QVariantList currentQualities READ currentQualities NOTIFY currentChanged)
     Q_PROPERTY(bool reversed READ reversed NOTIFY currentChanged)
+    // A large record's sequence, translation or ORFs still on their way.
+    Q_PROPERTY(bool recordLoading READ recordLoading NOTIFY loadingChanged)
+    Q_PROPERTY(bool translating READ translating NOTIFY loadingChanged)
+    Q_PROPERTY(bool findingOrfs READ findingOrfs NOTIFY loadingChanged)
     Q_PROPERTY(int lineWidth READ lineWidth NOTIFY lineWidthChanged)
     Q_PROPERTY(LinesModel *sequenceLines READ sequenceLines CONSTANT)
     Q_PROPERTY(LinesModel *translationLines READ translationLines CONSTANT)
     Q_PROPERTY(QVariantList orfs READ orfs NOTIFY orfsChanged)
     Q_PROPERTY(int orfMinLength READ orfMinLength WRITE setOrfMinLength NOTIFY orfsChanged)
+    // Every ORF found; orfs lists only the longest of them.
+    Q_PROPERTY(int orfCount READ orfCount NOTIFY orfsChanged)
 
     Q_PROPERTY(bool searchActive READ searchActive NOTIFY searchChanged)
     Q_PROPERTY(QString searchText READ searchText NOTIFY searchChanged)
@@ -89,11 +95,15 @@ public:
     QVariantMap current() const { return m_current; }
     QVariantList currentQualities() const { return m_qualities; }
     bool reversed() const { return m_reversed; }
+    bool recordLoading() const { return m_recordLoading; }
+    bool translating() const { return m_translating; }
+    bool findingOrfs() const { return m_findingOrfs; }
     int lineWidth() const { return m_lineWidth; }
     LinesModel *sequenceLines() { return &m_sequenceLines; }
     LinesModel *translationLines() { return &m_translationLines; }
     QVariantList orfs() const { return m_orfs; }
     int orfMinLength() const { return m_orfMinLength; }
+    int orfCount() const { return int(m_orfList.size()); }
     void setOrfMinLength(int length);
 
     bool searchActive() const { return m_searchActive; }
@@ -146,6 +156,7 @@ signals:
     void chartColorChanged();
     // The sequence view scrolls here, after a jump to a match or an ORF.
     void jumpToLine(int row);
+    void loadingChanged();
 
 private:
     // Every result carries the generation it was started in; opening another
@@ -171,6 +182,25 @@ private:
         StreamResult stream;
     };
 
+    struct RecordResult {
+        int request = 0;
+        bool ok = false;
+        FastxRecord record;
+        QVariantList qualities;
+    };
+    struct TranslateResult {
+        int request = 0;
+        std::vector<LinesModel::Segment> frames;
+    };
+    struct OrfResult {
+        int request = 0, generation = 0;
+        QVector<Orf> orfs;
+    };
+
+    static QVariantList qualityBars(const QByteArray &quality);
+    static std::vector<LinesModel::Segment> sixFrames(const QByteArray &sequence);
+    void applyRecord(int request, bool ok, FastxRecord record, QVariantList qualities);
+    void applyOrfs(QVector<Orf> orfs);
     void setError(const QString &message);
     void setNotice(const QString &message);
     void setBusy(const QString &kind);
@@ -201,6 +231,13 @@ private:
     QFutureWatcher<IndexResult> m_indexWatcher;
     QFutureWatcher<SearchResult> m_searchWatcher;
     QFutureWatcher<ExportResult> m_exportWatcher;
+    QFutureWatcher<RecordResult> m_recordWatcher;
+    QFutureWatcher<TranslateResult> m_translateWatcher;
+    QFutureWatcher<OrfResult> m_orfWatcher;
+    // Bumped per record shown and per ORF search, so stale results drop.
+    int m_recordRequest = 0, m_orfRequest = 0;
+    bool m_recordLoading = false, m_translating = false, m_findingOrfs = false;
+    qint64 m_pendingJump = -1;
     int m_generation = 0;
 
     int m_currentRow = -1;
