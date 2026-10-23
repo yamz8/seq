@@ -93,7 +93,8 @@ bool sameFile(const QString &output, const QStringList &inputs) {
 }
 
 StreamResult streamRecords(const QString &input, const QString &output, const QStringList &sources,
-                           const std::function<bool(qint64, FastxRecord &)> &keep) {
+                           const std::function<bool(qint64, FastxRecord &)> &keep,
+                           const std::atomic<bool> *cancel) {
     StreamResult result;
     if (sameFile(output, sources + QStringList{input})) {
         result.error = "Refusing to overwrite the file being read; choose a new file.";
@@ -108,6 +109,10 @@ StreamResult streamRecords(const QString &input, const QString &output, const QS
     FastxRecord record;
     QByteArray buffer;
     while (parser.next(record)) {
+        if (cancel && cancel->load()) {
+            result.error = "Cancelled.";
+            return result;
+        }
         if (keep(result.read++, record)) {
             writeRecord(buffer, record, parser.format());
             ++result.written;
@@ -171,7 +176,11 @@ QByteArray summaryCsv(const FastxIndex &index, const SummaryStats &s) {
         if (!json.contains(key))
             continue;
         const QJsonValue v = json.value(key);
-        QString text = v.isString() ? v.toString() : QString::number(v.toDouble(), 'g', 12);
+        // Counts stay exact integers; only the means and percentages have decimals.
+        const double d = v.toDouble();
+        QString text = v.isString()            ? v.toString()
+                       : d == double(v.toInteger()) ? QString::number(v.toInteger())
+                                                    : QString::number(d, 'f', 4);
         if (text.contains(',') || text.contains('"'))
             text = '"' + text.replace('"', "\"\"") + '"';
         csv += QByteArray(key) + ',' + text.toUtf8() + '\n';

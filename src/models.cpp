@@ -105,7 +105,11 @@ void LinesModel::setWidth(int width) {
 void LinesModel::setHighlights(int segment, std::vector<Highlight> highlights) {
     if (segment < 0 || segment >= int(m_segments.size()))
         return;
-    m_segments[size_t(segment)].highlights = std::move(highlights);
+    Segment &s = m_segments[size_t(segment)];
+    s.highlights = std::move(highlights);
+    s.longest = 0;
+    for (const Highlight &h : s.highlights)
+        s.longest = qMax(s.longest, h.length);
     if (m_rows > 0)
         emit dataChanged(index(0), index(m_rows - 1), {HighlightsRole});
 }
@@ -136,7 +140,7 @@ QVariant LinesModel::data(const QModelIndex &index, int role) const {
         // Matches overlapping this row, clipped to it, as [from, length, current].
         QVariantList list;
         const qint64 end = start + m_width;
-        auto it = std::lower_bound(s.highlights.begin(), s.highlights.end(), start - 1000,
+        auto it = std::lower_bound(s.highlights.begin(), s.highlights.end(), start - s.longest,
                                    [](const Highlight &h, qint64 v) { return h.start < v; });
         for (; it != s.highlights.end() && it->start < end; ++it) {
             const qint64 from = qMax(start, it->start), to = qMin(end, it->start + it->length);

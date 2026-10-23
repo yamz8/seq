@@ -112,6 +112,8 @@ public:
     Q_INVOKABLE void move(int delta);
     Q_INVOKABLE void toggleReverse();
     Q_INVOKABLE void toggleLineWidth();
+    // 0 sequence, 1 translation, 2 ORFs: the tab shown is kept up to date.
+    Q_INVOKABLE void setDetailTab(int tab);
     Q_INVOKABLE void translateCurrent();
     Q_INVOKABLE void findOrfs();
     // Highlights an ORF in the sequence and returns the row to scroll to.
@@ -146,15 +148,27 @@ signals:
     void jumpToLine(int row);
 
 private:
+    // Every result carries the generation it was started in; opening another
+    // file starts a new one, so late results of the old file are dropped.
     struct IndexResult {
+        int generation = 0;
         std::shared_ptr<FastxIndex> index;
         SummaryStats stats;
         bool ok = false;
     };
     struct SearchResult {
+        int generation = 0;
+        QString text;
+        bool motif = false;
+        int motifLength = 0;
         std::vector<SearchMatch> matches;
         bool truncated = false;
         QString error;
+    };
+    struct ExportResult {
+        int generation = 0;
+        QString path;
+        StreamResult stream;
     };
 
     void setError(const QString &message);
@@ -186,7 +200,8 @@ private:
     QTimer m_progressTimer;
     QFutureWatcher<IndexResult> m_indexWatcher;
     QFutureWatcher<SearchResult> m_searchWatcher;
-    QFutureWatcher<StreamResult> m_exportWatcher;
+    QFutureWatcher<ExportResult> m_exportWatcher;
+    int m_generation = 0;
 
     int m_currentRow = -1;
     qsizetype m_currentRecord = -1;
@@ -194,7 +209,8 @@ private:
     QVariantMap m_current;
     QVariantList m_qualities, m_orfs;
     QVector<Orf> m_orfList;
-    bool m_reversed = false;
+    bool m_reversed = false, m_orfsFound = false;
+    int m_detailTab = 0;
     int m_lineWidth = 60, m_orfMinLength = 300;
     std::vector<Highlight> m_orfHighlight;
 

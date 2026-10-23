@@ -49,11 +49,9 @@ ApplicationWindow {
             return
         showSummary = false
         detailTab = detailTab === tab ? 0 : tab
-        if (detailTab === 1)
-            backend.translateCurrent()
-        if (detailTab === 2 && backend.orfs.length === 0)
-            backend.findOrfs()
     }
+    // The backend keeps the shown tab's translation or ORFs up to date.
+    onDetailTabChanged: backend.setDetailTab(detailTab)
 
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: help.opened ? help.close() : help.open() }
     Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: win.keys; onActivated: Qt.quit() }

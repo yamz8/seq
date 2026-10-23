@@ -79,7 +79,8 @@ private:
 // One entry per record, small enough to hold millions of them.
 struct IndexEntry {
     qint64 offset = 0;
-    quint32 idOffset = 0;
+    // IDs of a hundred million reads can pass 4 GiB together.
+    qint64 idOffset = 0;
     quint16 idLength = 0;
     quint32 length = 0;
     quint32 gc = 0, at = 0;

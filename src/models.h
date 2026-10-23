@@ -64,6 +64,8 @@ public:
         QString label;
         QByteArray sequence;
         std::vector<Highlight> highlights;
+        // The longest highlight, so a row finds every one reaching into it.
+        int longest = 0;
     };
     void setSegments(std::vector<Segment> segments, int width);
     void setWidth(int width);

@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QString>
+#include <atomic>
 #include <functional>
 #include <memory>
 
@@ -39,9 +40,11 @@ struct StreamResult {
 
 // Reads every record of input and writes those keep() accepts, after it has
 // had the chance to change them (index is the record's 0-based position).
-// sources are every path that must not be overwritten.
+// sources are every path that must not be overwritten. Setting cancel stops
+// it with nothing written.
 StreamResult streamRecords(const QString &input, const QString &output, const QStringList &sources,
-                           const std::function<bool(qint64 index, FastxRecord &record)> &keep);
+                           const std::function<bool(qint64 index, FastxRecord &record)> &keep,
+                           const std::atomic<bool> *cancel = nullptr);
 
 QJsonObject summaryJson(const FastxIndex &index, const SummaryStats &stats);
 QByteArray summaryCsv(const FastxIndex &index, const SummaryStats &stats);

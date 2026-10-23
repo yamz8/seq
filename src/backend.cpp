@@ -45,14 +45,15 @@ Backend::Backend(FilePicker *picker, QObject *parent)
     });
     connect(&m_indexWatcher, &QFutureWatcher<IndexResult>::finished, this, &Backend::indexFinished);
     connect(&m_searchWatcher, &QFutureWatcher<SearchResult>::finished, this, &Backend::searchFinished);
-    connect(&m_exportWatcher, &QFutureWatcher<StreamResult>::finished, this, [this] {
-        const StreamResult result = m_exportWatcher.result();
+    connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
+        const ExportResult result = m_exportWatcher.result();
+        if (result.generation != m_generation)
+            return;
         setBusy({});
-        if (!result.error.isEmpty())
-            setError(result.error);
+        if (!result.stream.error.isEmpty())
+            setError(result.stream.error);
         else
-            setNotice(tr("Exported %n records to %1", "", int(result.written)).arg(m_pendingExport));
-        m_pendingExport.clear();
+            setNotice(tr("Exported %n records to %1", "", int(result.stream.written)).arg(result.path));
     });
 }
 
@@ -129,13 +130,12 @@ void Backend::openPath(const QString &path) {
         setError(tr("%1 is not a file.").arg(path));
         return;
     }
+    // Opening another file abandons whatever the last one was doing: the
+    // worker stops, and a result it still delivers belongs to an older
+    // generation and is dropped.
+    ++m_generation;
     if (busy()) {
-        // Opening another file abandons whatever the last one was doing.
-        m_indexWatcher.disconnect(this);
-        m_searchWatcher.disconnect(this);
         cancelWork();
-        connect(&m_indexWatcher, &QFutureWatcher<IndexResult>::finished, this, &Backend::indexFinished);
-        connect(&m_searchWatcher, &QFutureWatcher<SearchResult>::finished, this, &Backend::searchFinished);
         setBusy({});
     }
     setError({});
@@ -154,8 +154,10 @@ void Backend::openPath(const QString &path) {
     const QString absolute = QFileInfo(path).absoluteFilePath();
     m_pendingExport.clear();
     setBusy("index");
-    m_indexWatcher.setFuture(QtConcurrent::run([this, absolute, cachePath] {
+    const int generation = m_generation;
+    m_indexWatcher.setFuture(QtConcurrent::run([this, absolute, cachePath, generation] {
         IndexResult result;
+        result.generation = generation;
         result.index = std::make_shared<FastxIndex>();
         result.ok = result.index->build(absolute, cachePath, &m_progress, &m_cancel);
         if (result.ok)
@@ -166,6 +168,8 @@ void Backend::openPath(const QString &path) {
 
 void Backend::indexFinished() {
     const IndexResult result = m_indexWatcher.result();
+    if (result.generation != m_generation)
+        return;
     setBusy({});
     if (!result.ok) {
         m_nextCache.reset();
@@ -199,6 +203,7 @@ void Backend::indexFinished() {
     };
 
     m_searchActive = false;
+    m_motifSearch = false;
     m_searchText.clear();
     m_matches.clear();
     m_matchIndex = -1;
@@ -270,7 +275,22 @@ void Backend::loadRecord(qsizetype record) {
     m_translationLines.setSegments({}, m_lineWidth);
     m_orfList.clear();
     m_orfs.clear();
-    emit orfsChanged();
+    m_orfsFound = false;
+    // The tab on screen follows the record; the others wait until shown.
+    if (m_detailTab == 1)
+        translateCurrent();
+    if (m_detailTab == 2)
+        findOrfs();
+    else
+        emit orfsChanged();
+}
+
+void Backend::setDetailTab(int tab) {
+    m_detailTab = tab;
+    if (tab == 1)
+        translateCurrent();
+    if (tab == 2 && !m_orfsFound)
+        findOrfs();
 }
 
 // Matches and the shown ORF, mapped onto the strand on screen.
@@ -324,17 +344,18 @@ void Backend::setOrfMinLength(int length) {
     if (length == m_orfMinLength)
         return;
     m_orfMinLength = length;
-    if (!m_orfList.isEmpty() || !m_orfs.isEmpty()) {
-        m_orfList.clear();
+    // Search again whenever there was a search, even one that found nothing.
+    if (m_orfsFound)
         findOrfs();
-    }
-    emit orfsChanged();
+    else
+        emit orfsChanged();
 }
 
 void Backend::findOrfs() {
     if (m_currentRecord < 0 || protein())
         return;
     m_orfList = ::findOrfs(m_record.sequence, m_orfMinLength);
+    m_orfsFound = true;
     m_orfs.clear();
     for (int i = 0; i < qMin(int(m_orfList.size()), MaxOrfs); ++i) {
         const Orf &o = m_orfList[i];
@@ -374,14 +395,17 @@ void Backend::search(const QString &text, bool motif, bool bothStrands) {
         return;
     }
     setError({});
-    m_searchText = trimmed;
-    m_motifSearch = motif;
-    m_motifLength = compiled.length();
     setBusy("search");
     const auto index = m_index;
     const bool both = bothStrands && index->alphabet() == Alphabet::Nucleotide;
-    m_searchWatcher.setFuture(QtConcurrent::run([this, index, trimmed, motif, compiled, both] {
+    const int generation = m_generation;
+    m_searchWatcher.setFuture(QtConcurrent::run([this, index, trimmed, motif, compiled, both, generation] {
+        // The current search stays in effect until this one finishes.
         SearchResult result;
+        result.generation = generation;
+        result.text = trimmed;
+        result.motif = motif;
+        result.motifLength = compiled.length();
         if (!motif) {
             const QByteArray needle = trimmed.toUtf8().toLower();
             for (qsizetype i = 0; i < index->size() && !m_cancel; ++i) {
@@ -416,11 +440,16 @@ void Backend::search(const QString &text, bool motif, bool bothStrands) {
 
 void Backend::searchFinished() {
     SearchResult result = m_searchWatcher.result();
+    if (result.generation != m_generation)
+        return;
     setBusy({});
     if (!result.error.isEmpty()) {
         setError(result.error);
         return;
     }
+    m_searchText = result.text;
+    m_motifSearch = result.motif;
+    m_motifLength = result.motifLength;
     m_matches = std::move(result.matches);
     m_matchesTruncated = result.truncated;
     m_searchActive = true;
@@ -450,6 +479,7 @@ void Backend::clearSearch() {
         return;
     const qsizetype record = m_currentRecord;
     m_searchActive = false;
+    m_motifSearch = false;
     m_searchText.clear();
     m_matches.clear();
     m_matchIndex = -1;
@@ -517,6 +547,7 @@ ChartData Backend::chartFor(const QString &kind) const {
         chart.xLabel = tr("Mean Phred quality");
         chart.lowThreshold = 20;
         chart.midThreshold = 30;
+        chart.thresholdsOnX = true;
     }
     return chart;
 }
@@ -579,12 +610,15 @@ bool Backend::exportTo(const QString &kind, const QString &path) {
     const bool filtered = m_records.filtered();
     const QString input = m_index->readablePath();
     const QStringList protectedPaths = sources();
-    m_pendingExport = path;
     setBusy("export");
     const qint64 total = m_index->size();
-    m_exportWatcher.setFuture(QtConcurrent::run([this, filter, filtered, input, path, protectedPaths, total] {
+    const int generation = m_generation;
+    m_exportWatcher.setFuture(QtConcurrent::run([this, filter, filtered, input, path, protectedPaths, total, generation] {
         size_t next = 0;
-        return streamRecords(input, path, protectedPaths, [&](qint64 index, FastxRecord &) {
+        ExportResult result;
+        result.generation = generation;
+        result.path = path;
+        result.stream = streamRecords(input, path, protectedPaths, [&](qint64 index, FastxRecord &) {
             if ((index & 0xfff) == 0)
                 m_progress = int(1000 * index / qMax<qint64>(1, total));
             if (!filtered)
@@ -592,7 +626,8 @@ bool Backend::exportTo(const QString &kind, const QString &path) {
             while (next < filter.size() && filter[next] < index)
                 ++next;
             return next < filter.size() && filter[next] == index;
-        });
+        }, &m_cancel);
+        return result;
     }));
     return true;
 }

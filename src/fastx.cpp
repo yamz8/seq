@@ -333,7 +333,7 @@ bool FastxIndex::build(const QString &path, const QString &cachePath, std::atomi
     while (parser.next(record)) {
         IndexEntry entry;
         entry.offset = record.offset;
-        entry.idOffset = quint32(m_ids.size());
+        entry.idOffset = m_ids.size();
         entry.idLength = quint16(qMin<qsizetype>(record.id.size(), 0xffff));
         m_ids.append(record.id.constData(), entry.idLength);
         entry.length = quint32(record.sequence.size());

@@ -131,10 +131,12 @@ void Motif::search(const QByteArray &sequence, bool bothStrands,
         return;
     const char *s = sequence.constData();
     if (m_isProtein) {
-        // X in a protein motif stands for any residue.
+        // X in a protein motif stands for any residue. Case folds for letters
+        // only, so a stop (*) or gap (-) matches itself.
+        auto upper = [](char c) { return c >= 'a' && c <= 'z' ? char(c - 32) : c; };
         for (qsizetype i = 0; i + m <= n; ++i) {
             qsizetype j = 0;
-            while (j < m && (m_protein[j] == 'X' || (uchar(s[i + j]) & 0xdf) == uchar(m_protein[j])))
+            while (j < m && (m_protein[j] == 'X' || upper(s[i + j]) == m_protein[j]))
                 ++j;
             if (j == m && !found(i, '+'))
                 return;

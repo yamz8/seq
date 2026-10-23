@@ -16,6 +16,21 @@ QString axisNumber(double value, double span) {
 }
 }
 
+QColor barColor(const ChartData &chart, int from, double value) {
+    double score = value;
+    if (chart.thresholdsOnX) {
+        // Value i stands for x = xMin + i * step; a bar takes its first x.
+        const int count = int(chart.values.size());
+        const double step = count > 1 ? (chart.xMax - chart.xMin) / (count - 1) : 0;
+        score = chart.xMin + from * step;
+    }
+    if (chart.lowThreshold >= 0 && score < chart.lowThreshold)
+        return chart.low;
+    if (chart.midThreshold >= 0 && score < chart.midThreshold)
+        return chart.mid;
+    return chart.bar;
+}
+
 void paintChart(QPainter &painter, const QRectF &rect, const ChartData &chart) {
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, false);
@@ -70,11 +85,7 @@ void paintChart(QPainter &painter, const QRectF &rect, const ChartData &chart) {
         for (int i = from; i < to; ++i)
             sum += chart.values[i];
         const double value = sum / (to - from);
-        QColor color = chart.bar;
-        if (chart.lowThreshold >= 0 && value < chart.lowThreshold)
-            color = chart.low;
-        else if (chart.midThreshold >= 0 && value < chart.midThreshold)
-            color = chart.mid;
+        const QColor color = barColor(chart, from, value);
         const double h = plot.height() * value / max;
         const double gap = width > 3 ? 1 : 0;
         painter.fillRect(QRectF(plot.left() + b * width, plot.bottom() - h, qMax(0.5, width - gap), h), color);
@@ -151,9 +162,10 @@ void ChartItem::paint(QPainter *painter) {
     chart.title = m_title;
     chart.xLabel = m_xLabel;
     chart.bar = m_color;
-    if (m_phred) {
+    if (m_phred || m_phredAxis) {
         chart.lowThreshold = 20;
         chart.midThreshold = 30;
+        chart.thresholdsOnX = m_phredAxis;
     }
     paintChart(*painter, boundingRect(), chart);
 }

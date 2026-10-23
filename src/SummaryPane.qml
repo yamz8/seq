@@ -70,7 +70,7 @@ Flickable {
                 title: qsTr("Reads by mean quality")
                 xLabel: qsTr("Mean Phred quality")
                 color: theme.accent
-                phred: true
+                phredAxis: true
             }
         }
 

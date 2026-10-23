@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include "backend.h"
+#include "chart.h"
 #include "exporter.h"
 #include "fastx.h"
 #include "filepicker.h"
@@ -323,6 +324,141 @@ private slots:
         QCOMPARE(backend.records()->rowCount(), 1);
         backend.clearSearch();
         QCOMPARE(backend.records()->rowCount(), 3);
+    }
+
+    void openTabFollowsTheRecord()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("orfs.fa");
+        // Record two holds a 30 bp ORF; record three only a 9 bp one.
+        write(path, ">one\nATGGCCTAA\n>two\nCCATGAAACCCGGGTTTAAACCCGGGAAATAGCC\n>three\nATGAAATAG\n");
+        FakePicker picker;
+        Backend backend(&picker);
+        backend.openPath(path);
+        backend.waitForIdle();
+
+        backend.setDetailTab(1);
+        QCOMPARE(backend.translationLines()->rowCount(), 6);
+        backend.move(1);
+        // Six frames of the newly selected record, without reopening the tab.
+        QCOMPARE(backend.translationLines()->rowCount(), 6);
+        QCOMPARE(backend.translationLines()->data(backend.translationLines()->index(0), LinesModel::TextRole).toString(),
+                 QString::fromLatin1(translate("CCATGAAACCCGGGTTTAAACCCGGGAAATAGCC", 1)));
+
+        backend.setOrfMinLength(30);
+        backend.setDetailTab(2);
+        QCOMPARE(backend.orfs().size(), 1);
+        backend.move(1);
+        QCOMPARE(backend.orfs().size(), 0);
+        // A search that found nothing runs again with a lower minimum.
+        backend.setOrfMinLength(9);
+        QCOMPARE(backend.orfs().size(), 1);
+    }
+
+    void longHighlightsCoverEveryRow()
+    {
+        LinesModel lines;
+        lines.setSegments({{QString(), QByteArray(3000, 'A'), {}}}, 60);
+        lines.setHighlights(0, {{0, 3000, true}});
+        for (const int row : {0, 20, 49}) {
+            const QVariantList h = lines.data(lines.index(row), LinesModel::HighlightsRole).toList();
+            QCOMPARE(h.size(), 1);
+            QCOMPARE(h[0].toList().value(1).toInt(), 60);
+        }
+    }
+
+    void qualityHistogramIsColoredByScore()
+    {
+        ChartData chart;
+        chart.values = QVector<double>(42, 0);
+        chart.values[10] = 5;
+        chart.values[35] = 10000;
+        chart.xMin = 0;
+        chart.xMax = 41;
+        chart.lowThreshold = 20;
+        chart.midThreshold = 30;
+        chart.thresholdsOnX = true;
+        QCOMPARE(barColor(chart, 10, 5), chart.low);
+        QCOMPARE(barColor(chart, 25, 25), chart.mid);
+        QCOMPARE(barColor(chart, 35, 10000), chart.bar);
+        // Per-base qualities are colored by height.
+        chart.thresholdsOnX = false;
+        QCOMPARE(barColor(chart, 35, 12), chart.low);
+    }
+
+    void openingAnotherFileDropsTheOldWork()
+    {
+        QTemporaryDir dir;
+        const QString big = dir.filePath("big.fq"), small = dir.filePath("small.fa");
+        QByteArray reads;
+        for (int i = 0; i < 200000; ++i)
+            reads += "@r" + QByteArray::number(i) + "\nACGTACGTAC\n+\nIIIIIIIIII\n";
+        write(big, reads);
+        write(small, ">only\nACGT\n");
+        FakePicker picker;
+        Backend backend(&picker);
+        backend.openPath(big);
+        backend.waitForIdle();
+        QVERIFY(backend.exportTo("filtered", dir.filePath("copy.fq")));
+        QVERIFY(backend.busy());
+        backend.openPath(small);
+        QCOMPARE(backend.busyKind(), QString("index"));
+        backend.waitForIdle();
+        QCoreApplication::processEvents();
+        QCOMPARE(backend.fileName(), QString("small.fa"));
+        QCOMPARE(backend.totalRecords(), 1);
+        QVERIFY2(backend.notice().isEmpty(), qPrintable(backend.notice()));
+        QVERIFY(!backend.busy());
+        QVERIFY(!QFile::exists(dir.filePath("copy.fq")));
+    }
+
+    void searchStateChangesOnlyWhenItFinishes()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("genes.fa");
+        write(path, ">alpha\nAAAGAATTCAAA\n>beta\nCCCC\n");
+        FakePicker picker;
+        Backend backend(&picker);
+        backend.openPath(path);
+        backend.waitForIdle();
+        backend.search("alp", false, false);
+        backend.waitForIdle();
+        QVERIFY(!backend.motifSearch());
+        backend.search("GAATTC", true, true);
+        QVERIFY(!backend.motifSearch());
+        QCOMPARE(backend.searchText(), QString("alp"));
+        backend.waitForIdle();
+        QVERIFY(backend.motifSearch());
+        QCOMPARE(backend.searchText(), QString("GAATTC"));
+    }
+
+    void proteinMotifsMatchStopsAndGaps()
+    {
+        Motif motif;
+        QVERIFY(motif.compile("K*", Alphabet::Protein));
+        QList<qint64> hits;
+        motif.search("MAK*-k*", false, [&](qint64 p, char) { hits.append(p); return true; });
+        QCOMPARE(hits, (QList<qint64>{2, 5}));
+        Motif gap;
+        QVERIFY(gap.compile("*-", Alphabet::Protein));
+        hits.clear();
+        gap.search("MAK*-K", false, [&](qint64 p, char) { hits.append(p); return true; });
+        QCOMPARE(hits, (QList<qint64>{3}));
+    }
+
+    void csvKeepsLargeCountsExact()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("a.fa");
+        write(path, ">a\nACGT\n");
+        FastxIndex index;
+        QVERIFY(index.build(path, {}));
+        SummaryStats s = index.stats();
+        s.totalLength = 1234567890123;
+        s.meanLength = 2.5;
+        const QByteArray csv = summaryCsv(index, s);
+        QVERIFY2(csv.contains("total_length,1234567890123\n"), csv.constData());
+        QVERIFY(csv.contains("mean_length,2.5000\n"));
     }
 
     void themeFallsBack()

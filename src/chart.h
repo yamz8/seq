@@ -16,13 +16,18 @@ struct ChartData {
     QString title, xLabel;
     QColor bar = QColor("#FFD60A"), text = QColor("#c8c8cc"), grid = QColor("#2a2a2f");
     QColor background = Qt::transparent;
-    // Bars below these values are drawn in the warning colors; for Phred.
+    // Bars below these scores are drawn in the warning colors; for Phred.
+    // The score is the bar's height, or with thresholdsOnX the x value it
+    // stands for, as in a histogram of reads by quality.
     double lowThreshold = -1, midThreshold = -1;
+    bool thresholdsOnX = false;
     QColor low = QColor("#d9534f"), mid = QColor("#d9a54f");
     QString fontFamily;
 };
 
 void paintChart(QPainter &painter, const QRectF &rect, const ChartData &chart);
+// The color of a bar of the given height that starts at chart.values[from].
+QColor barColor(const ChartData &chart, int from, double value);
 bool writeChartSvg(const QString &path, const ChartData &chart, QSize size = {720, 360}, QString *error = nullptr);
 
 // The chart as a Qt Quick item; the window binds the data properties.
@@ -34,7 +39,9 @@ class ChartItem : public QQuickPaintedItem {
     Q_PROPERTY(QString title MEMBER m_title NOTIFY changed)
     Q_PROPERTY(QString xLabel MEMBER m_xLabel NOTIFY changed)
     Q_PROPERTY(QColor color MEMBER m_color NOTIFY changed)
+    // phred colors bars by their height as a score; phredAxis by their x.
     Q_PROPERTY(bool phred MEMBER m_phred NOTIFY changed)
+    Q_PROPERTY(bool phredAxis MEMBER m_phredAxis NOTIFY changed)
 
 public:
     explicit ChartItem(QQuickItem *parent = nullptr);
@@ -50,5 +57,5 @@ private:
     double m_xMin = 0, m_xMax = 0;
     QString m_title, m_xLabel;
     QColor m_color = QColor("#FFD60A");
-    bool m_phred = false;
+    bool m_phred = false, m_phredAxis = false;
 };
