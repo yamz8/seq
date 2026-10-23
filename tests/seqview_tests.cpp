@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <zlib.h>
@@ -351,6 +352,26 @@ private slots:
         QCOMPARE(backend.records()->rowCount(), 1);
         backend.clearSearch();
         QCOMPARE(backend.records()->rowCount(), 3);
+    }
+
+    void decompressedCopyLeavesNoFile()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("reads.fq.gz");
+        writeGzip(path, "@a\nACGT\n+\nIIII\n@b\nGGCC\n+\nIIII\n");
+        const QDir cache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+        const auto copies = [&] { return cache.entryList({"index-*.fastx"}, QDir::Files).size(); };
+        const qsizetype before = copies();
+        FakePicker picker;
+        Backend backend(&picker);
+        backend.openPath(path);
+        backend.waitForIdle();
+        QVERIFY2(backend.error().isEmpty(), qPrintable(backend.error()));
+        QVERIFY(backend.compressed());
+        QCOMPARE(copies(), before);
+        // Still readable at random through the open descriptor.
+        backend.select(1);
+        QCOMPARE(backend.currentSequence(), QByteArray("GGCC"));
     }
 
     void openTabFollowsTheRecord()

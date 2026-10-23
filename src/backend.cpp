@@ -148,8 +148,10 @@ void Backend::openPath(const QString &path) {
     m_nextCache = std::make_unique<QTemporaryFile>(cacheDirectory + "/index-XXXXXX.fastx");
     QString cachePath;
     if (m_nextCache->open()) {
-        cachePath = m_nextCache->fileName();
-        m_nextCache->close();
+        // Unlinked at once and reached through its descriptor, so the copy
+        // goes away with the app however it ends, a crash included.
+        cachePath = QString("/proc/self/fd/%1").arg(m_nextCache->handle());
+        QFile::remove(m_nextCache->fileName());
     }
     const QString absolute = QFileInfo(path).absoluteFilePath();
     m_pendingExport.clear();
