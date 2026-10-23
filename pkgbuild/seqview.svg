@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#FFD60A"/>
+  <g fill="none" stroke="#1a1a1f" stroke-linecap="round">
+    <!-- Base pairs between the two strands of a helix. -->
+    <g stroke-width="3" opacity="0.55">
+      <line x1="22" y1="15" x2="42" y2="15"/>
+      <line x1="25" y1="24" x2="39" y2="24"/>
+      <line x1="25" y1="40" x2="39" y2="40"/>
+      <line x1="22" y1="49" x2="42" y2="49"/>
+    </g>
+    <g stroke-width="4.5">
+      <path d="M20 8 C20 22, 44 22, 44 32 S20 42, 20 56"/>
+      <path d="M44 8 C44 22, 20 22, 20 32 S44 42, 44 56"/>
+    </g>
+  </g>
+</svg>

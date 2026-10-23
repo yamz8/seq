@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Name=Seq
+Name[da]=Seq
+Name[de]=Seq
+Name[es_MX]=Seq
+Name[fr]=Seq
+Name[pt_BR]=Seq
+GenericName=Sequence viewer
+GenericName[da]=Sekvensviser
+GenericName[de]=Sequenzbetrachter
+GenericName[es_MX]=Visor de secuencias
+GenericName[fr]=Visionneuse de séquences
+GenericName[pt_BR]=Visualizador de sequências
+Comment=Open FASTA and FASTQ files fast, look through their sequences, and get the stats
+Comment[da]=Åbn FASTA- og FASTQ-filer hurtigt, gennemse sekvenserne og få statistikken
+Comment[de]=FASTA- und FASTQ-Dateien schnell öffnen, Sequenzen durchsehen und Statistiken erhalten
+Comment[es_MX]=Abre archivos FASTA y FASTQ rápido, revisa sus secuencias y obtén las estadísticas
+Comment[fr]=Ouvrez vite des fichiers FASTA et FASTQ, parcourez leurs séquences et obtenez les statistiques
+Comment[pt_BR]=Abra arquivos FASTA e FASTQ rápido, percorra as sequências e obtenha as estatísticas
+Keywords=FASTA;FASTQ;DNA;sequence;bioinformatics;genome;reads;
+Exec=seqview open %f
+Icon=seqview
+Terminal=false
+Categories=Science;Biology;
+MimeType=chemical/seq-na-fasta;chemical/seq-aa-fasta;application/x-fasta;text/x-fasta;application/x-fastq;
+StartupWMClass=seqview

@@ -1,0 +1,14 @@
+{
+  "%n records": {
+    "one": "%Ln record",
+    "other": "%Ln records"
+  },
+  "%n ORFs": {
+    "one": "%Ln ORF",
+    "other": "%Ln ORFs"
+  },
+  "Exported %n records to %1": {
+    "one": "Exported %Ln record to %1",
+    "other": "Exported %Ln records to %1"
+  }
+}
